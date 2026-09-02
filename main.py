@@ -38,12 +38,16 @@ ADMIN_IDS = [7857140781, 7619940687]
 
 VIP_LINK = "https://t.me/+YourVIPPrivateChannelLinkHere"
 
+# 🟢 Turso Cloud Database Credentials (ከ Render Environment Variables ይቀበላል)
+TURSO_DATABASE_URL = os.environ.get("TURSO_DATABASE_URL", "")
+TURSO_AUTH_TOKEN = os.environ.get("TURSO_AUTH_TOKEN", "")
+
 logging.basicConfig(
     format='%(asctime)s - %(name)s - %(levelname)s - %(message)s',
     level=logging.INFO
 )
 
-# 🟢 Render Persistent Storage - ዳታ እንዳይጠፋ ማስተካከያ
+# 🟢 Render Persistent Storage - ፎልደሮች ማዘጋጃ
 DATA_DIR = "/var/data" if os.path.exists("/var/data") else "."
 DB_NAME = os.path.join(DATA_DIR, "bot_database.db")
 BASE_BATCH_DIR = os.path.join(DATA_DIR, "batch_folders")
@@ -52,7 +56,16 @@ def is_admin(user_id: int) -> bool:
     """ ተጠቃሚው አድሚን መሆኑን ያረጋግጣል """
     return user_id in ADMIN_IDS
 
-# ------------------ 2. ፎልደር እና SQLite Database ዝግጅት ------------------
+# ------------------ 2. Turso Cloud / SQLite Database Connection ------------------
+def get_db_connection():
+    """ 
+    Turso Cloud ዳታቤዝ ካለ እሱን ያገናኛል፤ 
+    ከሌለ በሎካል SQLite ፋይል ይሰራል
+    """
+    if TURSO_DATABASE_URL and TURSO_AUTH_TOKEN:
+        return sqlite3.connect(TURSO_DATABASE_URL, auth_token=TURSO_AUTH_TOKEN)
+    return sqlite3.connect(DB_NAME)
+
 def init_batch_folders():
     """ ከባች 15 እስከ ባች 50 ያሉ ፎልደሮችን በራሱ ይፈጥራል """
     os.makedirs(BASE_BATCH_DIR, exist_ok=True)
@@ -62,7 +75,7 @@ def init_batch_folders():
 
 def init_db():
     """ ዳታቤዝ ይፈጥራል፤ አሮጌ መረጃዎችን ሳይሰርዝ ይይዛል """
-    conn = sqlite3.connect(DB_NAME)
+    conn = get_db_connection()
     cursor = conn.cursor()
     
     cursor.execute('''
@@ -98,7 +111,7 @@ def init_db():
     conn.close()
 
 def get_user(user_id: int):
-    conn = sqlite3.connect(DB_NAME)
+    conn = get_db_connection()
     cursor = conn.cursor()
     cursor.execute('SELECT user_id, name, phone, batch, payment_status, balance, is_banned, payment_date FROM users WHERE user_id = ?', (user_id,))
     row = cursor.fetchone()
@@ -119,14 +132,14 @@ def get_user(user_id: int):
 def add_user_if_not_exists(user_id: int):
     user = get_user(user_id)
     if not user:
-        conn = sqlite3.connect(DB_NAME)
+        conn = get_db_connection()
         cursor = conn.cursor()
         cursor.execute('INSERT INTO users (user_id) VALUES (?)', (user_id,))
         conn.commit()
         conn.close()
 
 def update_user(user_id: int, **kwargs):
-    conn = sqlite3.connect(DB_NAME)
+    conn = get_db_connection()
     cursor = conn.cursor()
     for key, value in kwargs.items():
         cursor.execute(f'UPDATE users SET {key} = ? WHERE user_id = ?', (value, user_id))
@@ -134,7 +147,7 @@ def update_user(user_id: int, **kwargs):
     conn.close()
 
 def get_paid_users_only():
-    conn = sqlite3.connect(DB_NAME)
+    conn = get_db_connection()
     cursor = conn.cursor()
     cursor.execute('''
         SELECT user_id, name, phone, batch, payment_date, payment_status 
@@ -158,7 +171,7 @@ def get_paid_users_only():
 
 def get_users_by_batch(batch_name: str):
     """ የተወሰነ ባች ውስጥ ያሉ ተጠቃሚዎችን ብቻ ለይቶ ያወጣል """
-    conn = sqlite3.connect(DB_NAME)
+    conn = get_db_connection()
     cursor = conn.cursor()
     cursor.execute('''
         SELECT user_id, name, phone, payment_status, payment_date, is_banned
@@ -181,7 +194,7 @@ def get_users_by_batch(batch_name: str):
     return users
 
 def record_payment_history(user_id: int, photo_id: str, status: str):
-    conn = sqlite3.connect(DB_NAME)
+    conn = get_db_connection()
     cursor = conn.cursor()
     today_str = datetime.now().strftime("%Y-%m-%d %H:%M")
     cursor.execute('''
@@ -192,7 +205,7 @@ def record_payment_history(user_id: int, photo_id: str, status: str):
     conn.close()
 
 def get_all_users():
-    conn = sqlite3.connect(DB_NAME)
+    conn = get_db_connection()
     cursor = conn.cursor()
     cursor.execute('SELECT user_id, name, phone, batch, payment_status, balance, is_banned, payment_date FROM users')
     rows = cursor.fetchall()
@@ -213,7 +226,7 @@ def get_all_users():
 
 # ------------------ 3. የወርሃዊ ክፍያ ማስታወሻ ------------------
 async def check_expired_payments_logic(bot):
-    conn = sqlite3.connect(DB_NAME)
+    conn = get_db_connection()
     cursor = conn.cursor()
     cursor.execute('SELECT user_id, name, payment_date FROM users WHERE payment_status = ?', ('ፅድቋል (Approved)',))
     approved_users = cursor.fetchall()
@@ -745,7 +758,6 @@ async def send_broadcast(update: Update, context: ContextTypes.DEFAULT_TYPE):
     )
     return ConversationHandler.END
 
-# 🟢 አዲስ የተጨመረ፦ ክፍያን ለመሰረዝ እና ከባች ለማስወጣት የሚያስችል የ /revoke ትእዛዝ
 async def revoke_user(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not is_admin(update.effective_user.id):
         return
@@ -765,7 +777,6 @@ async def revoke_user(update: Update, context: ContextTypes.DEFAULT_TYPE):
             await update.message.reply_text("❌ ይህ ተጠቃሚ በዳታቤዝ ውስጥ አልተገኘም።")
             return
 
-        # ክፍያውን ሰርዞ፣ ባላንስ 0 አድርጎ ባቹን ወደ "ያልተመረጠ" ይመልሰዋል
         update_user(target_id, payment_status='ተሰርዟል (Rejected)', balance=0.0, batch='ያልተመረጠ')
         
         user_name = user.get('name', 'ተጠቃሚ')
@@ -774,7 +785,6 @@ async def revoke_user(update: Update, context: ContextTypes.DEFAULT_TYPE):
             parse_mode=ParseMode.HTML
         )
         
-        # ለተጠቃሚው ማሳሰቢያ ይልካል
         try:
             await context.bot.send_message(
                 chat_id=target_id, 
@@ -1048,7 +1058,7 @@ if __name__ == '__main__':
     app.add_handler(CommandHandler("start", start))
     app.add_handler(CommandHandler("ban", ban_user))
     app.add_handler(CommandHandler("unban", unban_user))
-    app.add_handler(CommandHandler("revoke", revoke_user))  # 🟢 አዲስ የተጨመረ የ /revoke Handler
+    app.add_handler(CommandHandler("revoke", revoke_user))
     
     app.add_handler(reg_handler)
     app.add_handler(pay_handler)
@@ -1058,5 +1068,5 @@ if __name__ == '__main__':
     app.add_handler(CallbackQueryHandler(handle_admin_action, pattern='^(approve|reject)_'))
     app.add_handler(CallbackQueryHandler(handle_buttons))
 
-    print("🚀 ቦቱ Render ላይ በተሳካ ሁኔታ ስራ ጀምሯል...")
+    print("🚀 ቦቱ Render እና Turso Cloud ላይ በተሳካ ሁኔታ ስራ ጀምሯል...")
     app.run_polling()
