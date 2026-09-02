@@ -1,5 +1,6 @@
 import logging
-import sqlite3
+import os
+import libsql_experimental as sqlite3
 import asyncio
 import os
 import threading
