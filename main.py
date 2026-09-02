@@ -571,7 +571,7 @@ async def show_paid_users_list(query, context):
     buttons = InlineKeyboardMarkup([[InlineKeyboardButton("⬅️ ወደ አድሚን ገጽ", callback_data='admin_panel')]])
     await query.edit_message_text(text, reply_markup=buttons, parse_mode=ParseMode.HTML)
 
-# ------------------ 🆕 የባች ብሮድካስት እና PDF መላኪያ ------------------
+# ------------------ የባች ብሮድካስት እና PDF መላኪያ ------------------
 
 async def start_broadcast(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """ ብሮድካስቱ ለማን መላክ እንዳለበት አማራጭ ያቀርባል """
@@ -660,7 +660,6 @@ async def send_broadcast(update: Update, context: ContextTypes.DEFAULT_TYPE):
         if u.get('is_banned', 0) == 0:
             try:
                 if msg.document:
-                    # PDF ወይም ሌላ ፋይል ሲሆን
                     caption = f"📢 <b>ማስታወቂያ ከፖርታሉ ({target_display}):</b>\n\n{msg.caption}" if msg.caption else f"📢 <b>ማስታወቂያ ከፖርታሉ ({target_display})</b>"
                     await context.bot.send_document(
                         chat_id=u['user_id'],
@@ -669,7 +668,6 @@ async def send_broadcast(update: Update, context: ContextTypes.DEFAULT_TYPE):
                         parse_mode=ParseMode.HTML
                     )
                 elif msg.photo:
-                    # ፎቶ ሲሆን
                     caption = f"📢 <b>ማስታወቂያ ከፖርታሉ ({target_display}):</b>\n\n{msg.caption}" if msg.caption else f"📢 <b>ማስታወቂያ ከፖርታሉ ({target_display})</b>"
                     await context.bot.send_photo(
                         chat_id=u['user_id'],
@@ -678,7 +676,6 @@ async def send_broadcast(update: Update, context: ContextTypes.DEFAULT_TYPE):
                         parse_mode=ParseMode.HTML
                     )
                 elif msg.text:
-                    # ጽሑፍ ብቻ ሲሆን
                     await context.bot.send_message(
                         chat_id=u['user_id'],
                         text=f"📢 <b>ማስታወቂያ ከፖርታሉ ({target_display}):</b>\n\n{msg.text}",
@@ -698,7 +695,7 @@ async def send_broadcast(update: Update, context: ContextTypes.DEFAULT_TYPE):
     )
     return ConversationHandler.END
 
-# ------------------ Admin Ban / Unban ------------------
+# ------------------ Admin Ban / Unban / Revoke ------------------
 
 async def ban_user(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not is_admin(update.effective_user.id):
@@ -759,6 +756,51 @@ async def unban_user(update: Update, context: ContextTypes.DEFAULT_TYPE):
             f"✅ ተጠቃሚ <b>{user['name']}</b> (ID: <code>{target_id}</code>) ከእገዳ ነፃ ወጥቷል!", 
             parse_mode=ParseMode.HTML
         )
+
+    except ValueError:
+        await update.message.reply_text("⚠️ እባክዎን ትክክለኛ የቁጥር ID ያስገቡ!")
+
+# 🆕 ክፍያውን ለመሰረዝ እና ከባች ለማስወጣት (ተጠቃሚው ሳይታገድ)
+async def revoke_user(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    if not is_admin(update.effective_user.id):
+        return
+
+    if not context.args:
+        await update.message.reply_text(
+            "⚠️ <b>የተጠቃሚውን ID አብረው ይጻፉ!</b>\n\n<b>ምሳሌ፦</b> <code>/revoke 8711072926</code>", 
+            parse_mode=ParseMode.HTML
+        )
+        return
+
+    try:
+        target_id = int(context.args[0])
+        user = get_user(target_id)
+        if not user:
+            await update.message.reply_text("❌ ይህ ተጠቃሚ በዳታቤዝ ውስጥ አልተገኘም።")
+            return
+
+        # ክፍያውን ሰርዞ ከባች ማስወጣት (ሳይታገድ)
+        update_user(
+            target_id, 
+            payment_status='ተሰርዟል (Revoked)', 
+            batch='ያልተመረጠ', 
+            balance=0.0, 
+            payment_date=''
+        )
+
+        await update.message.reply_text(
+            f"🔄 የተጠቃሚ <b>{user['name']}</b> (ID: <code>{target_id}</code>) ክፍያ ተሰርዟል! ከባችም ወጥቷል።", 
+            parse_mode=ParseMode.HTML
+        )
+        
+        try:
+            await context.bot.send_message(
+                chat_id=target_id, 
+                text="⚠️ <b>የክፍያ ሁኔታዎ ተሰርዟል!</b>\n\nከባችዎ የወጡ ሲሆን፣ አገልግሎቱን ድጋሚ ለማግኘት እባክዎን በቦቱ በኩል ክፍያ ይፈፅሙ።", 
+                parse_mode=ParseMode.HTML
+            )
+        except Exception:
+            pass
 
     except ValueError:
         await update.message.reply_text("⚠️ እባክዎን ትክክለኛ የቁጥር ID ያስገቡ!")
@@ -948,6 +990,7 @@ if __name__ == '__main__':
     app.add_handler(CommandHandler("start", start))
     app.add_handler(CommandHandler("ban", ban_user))
     app.add_handler(CommandHandler("unban", unban_user))
+    app.add_handler(CommandHandler("revoke", revoke_user)) # 👈 የ/revoke ትእዛዝ እዚህ ተመዝግቧል
     
     app.add_handler(reg_handler)
     app.add_handler(pay_handler)
