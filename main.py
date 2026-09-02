@@ -17,7 +17,7 @@ from telegram.ext import (
     ContextTypes,
 )
 
------------------- Render Port Health Check Server ------------------
+# ------------------ Render Port Health Check Server ------------------
 
 class HealthCheckHandler(BaseHTTPRequestHandler):
     def do_GET(self):
@@ -30,7 +30,7 @@ def run_health_server():
     server = HTTPServer(('0.0.0.0', port), HealthCheckHandler)
     server.serve_forever()
 
------------------- 1. መቼቶች (Configuration) ------------------
+# ------------------ 1. መቼቶች (Configuration) ------------------
 
 TOKEN = "8647816372:AAGG43oY-pndgRXT6V_E_REyW1zTHQ0-jrs"
 
@@ -53,7 +53,7 @@ def is_admin(user_id: int) -> bool:
     """ ተጠቃሚው አድሚን መሆኑን ያረጋግጣል """
     return user_id in ADMIN_IDS
 
------------------- 2. ፎልደር እና SQLite Database ዝግጅት ------------------
+# ------------------ 2. ፎልደር እና SQLite Database ዝግጅት ------------------
 
 def init_batch_folders():
     """ ከባች 15 እስከ ባች 50 ያሉ ፎልደሮችን በራሱ ይፈጥራል """
@@ -212,7 +212,7 @@ def get_all_users():
         })
     return users
 
------------------- 3. የወርሃዊ ክፍያ ማስታወሻ ------------------
+# ------------------ 3. የወርሃዊ ክፍያ ማስታወሻ ------------------
 
 async def check_expired_payments_logic(bot):
     conn = sqlite3.connect(DB_NAME, timeout=30.0)
@@ -252,7 +252,7 @@ async def background_payment_checker(app):
             logging.error(f"Background checker error: {e}")
         await asyncio.sleep(43200)
 
------------------- 4. Keyboards & States ------------------
+# ------------------ 4. Keyboards & States ------------------
 
 REG_NAME, REG_PHONE, REG_BATCH = range(3)
 PAY_RECEIPT = 3
@@ -306,7 +306,7 @@ async def is_banned(update: Update) -> bool:
         return True
     return False
 
------------------- 5. User Registration & Payment Handlers ------------------
+# ------------------ 5. User Registration & Payment Handlers ------------------
 
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if await is_banned(update):
@@ -485,7 +485,7 @@ async def handle_admin_action(update: Update, context: ContextTypes.DEFAULT_TYPE
             parse_mode=ParseMode.HTML
         )
 
------------------- 6. የአድሚን ክፍሎች (Admin Dashboard & Batch Announcements) ------------------
+# ------------------ 6. የአድሚን ክፍሎች (Admin Dashboard & Batch Announcements) ------------------
 
 async def show_admin_panel(query, context):
     all_users = get_all_users()
@@ -662,7 +662,7 @@ async def send_batch_pdf_document(update: Update, context: ContextTypes.DEFAULT_
     )
     return ConversationHandler.END
 
------------------- 7. General Admin Broadcast & Ban Handlers ------------------
+# ------------------ 7. General Admin Broadcast & Ban Handlers ------------------
 
 async def show_paid_users_list(query, context):
     paid_users = get_paid_users_only()
@@ -774,7 +774,7 @@ async def unban_user(update: Update, context: ContextTypes.DEFAULT_TYPE):
     except ValueError:
         await update.message.reply_text("⚠️ እባክዎን ትክክለኛ የቁጥር ID ያስገቡ!")
 
------------------- 8. Other Button Handlers ------------------
+# ------------------ 8. Other Button Handlers ------------------
 
 async def handle_buttons(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if await is_banned(update):
@@ -889,7 +889,7 @@ async def cancel(update: Update, context: ContextTypes.DEFAULT_TYPE):
             await context.bot.send_message(chat_id=user_id, text="❌ ሂደቱ ተቋርጧል።", reply_markup=main_menu(user_id))
     return ConversationHandler.END
 
------------------- 9. ዋና ማስኪያጃ (Main Execution) ------------------
+# ------------------ 9. ዋና ማስኪያጃ (Main Execution) ------------------
 
 async def post_init(app):
     asyncio.create_task(background_payment_checker(app))
