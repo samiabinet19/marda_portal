@@ -1,15 +1,11 @@
-import logging  # ይህ መስመር መኖር አለበት
-logging_level = logging.INFO
-# የተቀረው ኮድ...
 import asyncio
 from datetime import datetime
-logging_level = logging.INFO
 import logging
 import os
 import threading
 
 from flask import Flask
-import libsql_experimental as sqlite3
+from pymongo import MongoClient
 from telegram import InlineKeyboardButton, InlineKeyboardMarkup, Update
 from telegram.constants import ParseMode
 from telegram.ext import (
@@ -19,11 +15,16 @@ from telegram.ext import (
     ContextTypes,
     ConversationHandler,
     MessageHandler,
-    CallbackQueryHandler,
     filters,
 )
 
-# ------------------ 1. Flask Web Server (Render Health Check) ------------------
+# ------------------ 1. Logging Setup ------------------
+logging.basicConfig(
+    format='%(asctime)s - %(name)s - %(levelname)s - %(message)s',
+    level=logging.INFO
+)
+
+# ------------------ 2. Flask Web Server (Render Health Check) ------------------
 web_app = Flask(__name__)
 
 @web_app.route('/')
@@ -34,41 +35,27 @@ def run_flask():
     port = int(os.environ.get("PORT", 8080))
     web_app.run(host='0.0.0.0', port=port)
 
-# ------------------ 2. መቼቶች (Configuration) ------------------
-TOKEN = "8647816372:AAGG43oY-pndgRXT6V_E_REyW1zTHQ0-jrs"
-
-# 🟢 ሁለቱ አድሚኖች
+# ------------------ 3. መቼቶች (Configuration) ------------------
+TOKEN = os.environ.get("BOT_TOKEN", "8647816372:AAGG43oY-pndgRXT6V_E_REyW1zTHQ0-jrs")
 ADMIN_IDS = [7857140781, 7619940687]
-
 VIP_LINK = "https://t.me/+YourVIPPrivateChannelLinkHere"
 
-# 🟢 Turso Cloud Database Credentials (ከ Render Environment Variables ይቀበላል)
-TURSO_DATABASE_URL = os.environ.get("TURSO_DATABASE_URL", "")
-TURSO_AUTH_TOKEN = os.environ.get("TURSO_AUTH_TOKEN", "")
-
-logging.basicConfig(
-    format='%(asctime)s - %(name)s - %(levelname)s - %(message)s',
-    level=logging.INFO
-)
+# 🟢 MongoDB Connection Setup
+MONGO_URI = os.environ.get("MONGO_URI", "mongodb+srv://Marda_sound:sa1995mi@cluster0.uoc9mel.mongodb.net/?appName=Cluster0")
+client = MongoClient(MONGO_URI)
+db = client["marda_bot_db"]
+users_col = db["users"]
+payments_col = db["payment_history"]
 
 # 🟢 Render Persistent Storage - ፎልደሮች ማዘጋጃ
 DATA_DIR = "/var/data" if os.path.exists("/var/data") else "."
-DB_NAME = os.path.join(DATA_DIR, "bot_database.db")
 BASE_BATCH_DIR = os.path.join(DATA_DIR, "batch_folders")
 
 def is_admin(user_id: int) -> bool:
     """ ተጠቃሚው አድሚን መሆኑን ያረጋግጣል """
     return user_id in ADMIN_IDS
 
-# ------------------ 3. Turso Cloud / SQLite Database Connection ------------------
-def get_db_connection():
-    """ 
-    Turso Cloud ዳታቤዝ ካለ እሱን ያገናኛል፤ 
-    ከሌለ በሎካል SQLite ፋይል ይሰራል
-    """
-    if TURSO_DATABASE_URL and TURSO_AUTH_TOKEN:
-        return sqlite3.connect(TURSO_DATABASE_URL, auth_token=TURSO_AUTH_TOKEN)
-    return sqlite3.connect(DB_NAME)
+# ------------------ 4. MongoDB Helper Functions ------------------
 
 def init_batch_folders():
     """ ከባች 15 እስከ ባች 50 ያሉ ፎልደሮችን በራሱ ይፈጥራል """
@@ -78,166 +65,106 @@ def init_batch_folders():
         os.makedirs(folder_path, exist_ok=True)
 
 def init_db():
-    """ ዳታቤዝ ይፈጥራል፤ አሮጌ መረጃዎችን ሳይሰርዝ ይይዛል """
-    conn = get_db_connection()
-    cursor = conn.cursor()
-    
-    cursor.execute('''
-        CREATE TABLE IF NOT EXISTS users (
-            user_id INTEGER PRIMARY KEY,
-            name TEXT DEFAULT 'አልተመዘገበም',
-            phone TEXT DEFAULT 'አልተመዘገበም',
-            batch TEXT DEFAULT 'ያልተመረጠ',
-            payment_status TEXT DEFAULT 'አልተከፈለም',
-            balance REAL DEFAULT 0.0,
-            is_banned INTEGER DEFAULT 0,
-            payment_date TEXT DEFAULT ''
-        )
-    ''')
-    
+    """ MongoDB Index ማዘጋጃ """
     try:
-        cursor.execute('ALTER TABLE users ADD COLUMN batch TEXT DEFAULT "ያልተመረጠ"')
-    except Exception:
-        pass
-    
-    cursor.execute('''
-        CREATE TABLE IF NOT EXISTS payment_history (
-            id INTEGER PRIMARY KEY AUTOINCREMENT,
-            user_id INTEGER,
-            photo_id TEXT,
-            amount REAL DEFAULT 100.0,
-            payment_date TEXT,
-            status TEXT
-        )
-    ''')
-    
-    conn.commit()
-    conn.close()
+        users_col.create_index("user_id", unique=True)
+    except Exception as e:
+        logging.error(f"MongoDB index creation error: {e}")
 
 def get_user(user_id: int):
-    conn = get_db_connection()
-    cursor = conn.cursor()
-    cursor.execute('SELECT user_id, name, phone, batch, payment_status, balance, is_banned, payment_date FROM users WHERE user_id = ?', (user_id,))
-    row = cursor.fetchone()
-    conn.close()
-    if row:
+    doc = users_col.find_one({"user_id": user_id})
+    if doc:
         return {
-            'user_id': row[0],
-            'name': row[1],
-            'phone': row[2],
-            'batch': row[3],
-            'payment_status': row[4],
-            'balance': row[5],
-            'is_banned': row[6],
-            'payment_date': row[7]
+            'user_id': doc.get('user_id'),
+            'name': doc.get('name', 'አልተመዘገበም'),
+            'phone': doc.get('phone', 'አልተመዘገበም'),
+            'batch': doc.get('batch', 'ያልተመረጠ'),
+            'payment_status': doc.get('payment_status', 'አልተከፈለም'),
+            'balance': doc.get('balance', 0.0),
+            'is_banned': doc.get('is_banned', 0),
+            'payment_date': doc.get('payment_date', '')
         }
     return None
 
 def add_user_if_not_exists(user_id: int):
-    user = get_user(user_id)
-    if not user:
-        conn = get_db_connection()
-        cursor = conn.cursor()
-        cursor.execute('INSERT INTO users (user_id) VALUES (?)', (user_id,))
-        conn.commit()
-        conn.close()
+    if not users_col.find_one({"user_id": user_id}):
+        users_col.insert_one({
+            "user_id": user_id,
+            "name": "አልተመዘገበም",
+            "phone": "አልተመዘገበም",
+            "batch": "ያልተመረጠ",
+            "payment_status": "አልተከፈለም",
+            "balance": 0.0,
+            "is_banned": 0,
+            "payment_date": ""
+        })
 
 def update_user(user_id: int, **kwargs):
-    conn = get_db_connection()
-    cursor = conn.cursor()
-    for key, value in kwargs.items():
-        cursor.execute(f'UPDATE users SET {key} = ? WHERE user_id = ?', (value, user_id))
-    conn.commit()
-    conn.close()
+    users_col.update_one({"user_id": user_id}, {"$set": kwargs})
 
 def get_paid_users_only():
-    conn = get_db_connection()
-    cursor = conn.cursor()
-    cursor.execute('''
-        SELECT user_id, name, phone, batch, payment_date, payment_status 
-        FROM users 
-        WHERE payment_status = 'ፅድቋል (Approved)'
-    ''')
-    rows = cursor.fetchall()
-    conn.close()
-    
+    docs = users_col.find({"payment_status": "ፅድቋል (Approved)"})
     paid_users = []
-    for row in rows:
+    for doc in docs:
         paid_users.append({
-            'user_id': row[0],
-            'name': row[1],
-            'phone': row[2],
-            'batch': row[3],
-            'payment_date': row[4],
-            'payment_status': row[5]
+            'user_id': doc.get('user_id'),
+            'name': doc.get('name', ''),
+            'phone': doc.get('phone', ''),
+            'batch': doc.get('batch', ''),
+            'payment_date': doc.get('payment_date', ''),
+            'payment_status': doc.get('payment_status', '')
         })
     return paid_users
 
 def get_users_by_batch(batch_name: str):
-    """ የተወሰነ ባች ውስጥ ያሉ ተጠቃሚዎችን ብቻ ለይቶ ያወጣል """
-    conn = get_db_connection()
-    cursor = conn.cursor()
-    cursor.execute('''
-        SELECT user_id, name, phone, payment_status, payment_date, is_banned
-        FROM users 
-        WHERE batch = ?
-    ''', (batch_name,))
-    rows = cursor.fetchall()
-    conn.close()
-    
+    docs = users_col.find({"batch": batch_name})
     users = []
-    for row in rows:
+    for doc in docs:
         users.append({
-            'user_id': row[0],
-            'name': row[1],
-            'phone': row[2],
-            'payment_status': row[3],
-            'payment_date': row[4],
-            'is_banned': row[5]
+            'user_id': doc.get('user_id'),
+            'name': doc.get('name', ''),
+            'phone': doc.get('phone', ''),
+            'payment_status': doc.get('payment_status', ''),
+            'payment_date': doc.get('payment_date', ''),
+            'is_banned': doc.get('is_banned', 0)
         })
     return users
 
 def record_payment_history(user_id: int, photo_id: str, status: str):
-    conn = get_db_connection()
-    cursor = conn.cursor()
     today_str = datetime.now().strftime("%Y-%m-%d %H:%M")
-    cursor.execute('''
-        INSERT INTO payment_history (user_id, photo_id, payment_date, status)
-        VALUES (?, ?, ?, ?)
-    ''', (user_id, photo_id, today_str, status))
-    conn.commit()
-    conn.close()
+    payments_col.insert_one({
+        "user_id": user_id,
+        "photo_id": photo_id,
+        "payment_date": today_str,
+        "status": status
+    })
 
 def get_all_users():
-    conn = get_db_connection()
-    cursor = conn.cursor()
-    cursor.execute('SELECT user_id, name, phone, batch, payment_status, balance, is_banned, payment_date FROM users')
-    rows = cursor.fetchall()
-    conn.close()
+    docs = users_col.find()
     users = []
-    for row in rows:
+    for doc in docs:
         users.append({
-            'user_id': row[0],
-            'name': row[1],
-            'phone': row[2],
-            'batch': row[3],
-            'payment_status': row[4],
-            'balance': row[5],
-            'is_banned': row[6],
-            'payment_date': row[7]
+            'user_id': doc.get('user_id'),
+            'name': doc.get('name', ''),
+            'phone': doc.get('phone', ''),
+            'batch': doc.get('batch', ''),
+            'payment_status': doc.get('payment_status', ''),
+            'balance': doc.get('balance', 0.0),
+            'is_banned': doc.get('is_banned', 0),
+            'payment_date': doc.get('payment_date', '')
         })
     return users
 
-# ------------------ 4. የወርሃዊ ክፍያ ማስታወሻ ------------------
+# ------------------ 5. የወርሃዊ ክፍያ ማስታወሻ ------------------
 async def check_expired_payments_logic(bot):
-    conn = get_db_connection()
-    cursor = conn.cursor()
-    cursor.execute('SELECT user_id, name, payment_date FROM users WHERE payment_status = ?', ('ፅድቋል (Approved)',))
-    approved_users = cursor.fetchall()
-    conn.close()
-
+    approved_users = users_col.find({"payment_status": "ፅድቋል (Approved)"})
     today = datetime.now()
-    for uid, name, p_date_str in approved_users:
+
+    for doc in approved_users:
+        uid = doc.get('user_id')
+        name = doc.get('name', '')
+        p_date_str = doc.get('payment_date', '')
+
         if p_date_str:
             try:
                 clean_date_str = p_date_str.split(' ')[0]
@@ -268,7 +195,7 @@ async def background_payment_checker(app):
             logging.error(f"Background checker error: {e}")
         await asyncio.sleep(43200)
 
-# ------------------ 5. Keyboards & States ------------------
+# ------------------ 6. Keyboards & States ------------------
 REG_NAME, REG_PHONE, REG_BATCH = range(3)
 PAY_RECEIPT = 3
 BROADCAST_STATE = 4
@@ -295,7 +222,6 @@ def main_menu(user_id: int) -> InlineKeyboardMarkup:
     return InlineKeyboardMarkup(keyboard)
 
 def get_batches_keyboard() -> InlineKeyboardMarkup:
-    """ ከባች 15 እስከ 50 በ 3 ረድፍ የተደረደሩ ቁልፎች """
     keyboard = []
     row = []
     for b in range(15, 51):
@@ -325,7 +251,7 @@ async def is_banned(update: Update) -> bool:
         return True
     return False
 
-# ------------------ 6. User Registration & Payment Handlers ------------------
+# ------------------ 7. User Registration & Payment Handlers ------------------
 
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if await is_banned(update):
@@ -514,7 +440,7 @@ async def handle_admin_action(update: Update, context: ContextTypes.DEFAULT_TYPE
             parse_mode=ParseMode.HTML
         )
 
-# ------------------ 7. የአድሚን ክፍሎች (Admin Dashboard & Batch Announcements) ------------------
+# ------------------ 8. የአድሚን ክፍሎች (Admin Dashboard & Batch Announcements) ------------------
 
 async def show_admin_panel(query, context):
     all_users = get_all_users()
@@ -537,7 +463,6 @@ async def show_admin_panel(query, context):
     await query.edit_message_text(report, reply_markup=admin_buttons, parse_mode=ParseMode.HTML)
 
 async def show_batch_selector_admin(query, context):
-    """ አድሚኑ ከባች 15 - 50 መርጦ ማስታወቂያ የሚልክበትን ወይም ሰዎችን የሚያይበትን ቁልፎች ያዘጋጃል """
     keyboard = []
     row = []
     for b in range(15, 51):
@@ -558,7 +483,6 @@ async def show_batch_selector_admin(query, context):
     )
 
 async def show_batch_options_menu(query, context, batch_name):
-    """ የተመረጠው ባች ላይ አድሚኑ ማድረግ የሚችላቸውን አማራጮች ያሳያል """
     users = get_users_by_batch(batch_name)
     text = f"📂 <b>የ {batch_name} መቆጣጠሪያ</b>\n\nበዚህ ባች ውስጥ የተመዘገቡ ተጠቃሚዎች ብዛት፦ <b>{len(users)}</b>\n\nእባክዎን ማድረግ የሚፈልጉትን ይምረጡ፦"
     
@@ -571,7 +495,6 @@ async def show_batch_options_menu(query, context, batch_name):
     await query.edit_message_text(text, reply_markup=buttons, parse_mode=ParseMode.HTML)
 
 async def display_specific_batch_users(query, context, batch_name):
-    """ የተመረጠው ባች ውስጥ ያሉትን አባላት ዝርዝር ያሳያል """
     users = get_users_by_batch(batch_name)
     
     if not users:
@@ -593,7 +516,7 @@ async def display_specific_batch_users(query, context, batch_name):
     ])
     await query.edit_message_text(text, reply_markup=buttons, parse_mode=ParseMode.HTML)
 
-# --- 🟢 በየባቹ ማስታወቂያ መላኪያ Handlers (Text & PDF) ---
+# --- በየባቹ ማስታወቂያ መላኪያ Handlers (Text & PDF) ---
 
 async def prompt_batch_msg(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query
@@ -703,7 +626,7 @@ async def send_batch_pdf_document(update: Update, context: ContextTypes.DEFAULT_
     )
     return ConversationHandler.END
 
-# ------------------ 8. General Admin Broadcast, Revoke & Ban Handlers ------------------
+# ------------------ 9. General Admin Broadcast, Revoke & Ban Handlers ------------------
 
 async def show_paid_users_list(query, context):
     paid_users = get_paid_users_only()
@@ -864,7 +787,7 @@ async def unban_user(update: Update, context: ContextTypes.DEFAULT_TYPE):
     except ValueError:
         await update.message.reply_text("⚠️ እባክዎን ትክክለኛ የቁጥር ID ያስገቡ!")
 
-# ------------------ 9. Other Button Handlers ------------------
+# ------------------ 10. Other Button Handlers ------------------
 
 async def handle_buttons(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if await is_banned(update):
@@ -989,7 +912,7 @@ async def cancel(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await update.callback_query.edit_message_text("❌ ሂደቱ ተቋርጧል።", reply_markup=main_menu(user_id))
     return ConversationHandler.END
 
-# ------------------ 10. ዋና ማስኪያጃ (Main Execution) ------------------
+# ------------------ 11. ዋና ማስኪያጃ (Main Execution) ------------------
 async def post_init(app):
     asyncio.create_task(background_payment_checker(app))
 
@@ -1075,5 +998,5 @@ if __name__ == '__main__':
     app.add_handler(CallbackQueryHandler(handle_admin_action, pattern='^(approve|reject)_'))
     app.add_handler(CallbackQueryHandler(handle_buttons))
 
-    print("🚀 ቦቱ Render እና Turso Cloud ላይ በተሳካ ሁኔታ ስራ ጀምሯል...")
+    print("🚀 ቦቱ Render እና MongoDB Cloud ላይ በተሳካ ሁኔታ ስራ ጀምሯል...")
     app.run_polling()
