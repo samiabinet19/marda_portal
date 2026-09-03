@@ -1,3 +1,6 @@
+import logging  # ይህ መስመር መኖር አለበት
+logging_level = logging.INFO
+# የተቀረው ኮድ...
 import asyncio
 from datetime import datetime
 logging_level = logging.INFO
