@@ -1,36 +1,37 @@
+import asyncio
+from datetime import datetime
+logging_level = logging.INFO
 import logging
 import os
-import libsql_experimental as sqlite3
-import asyncio
-import os
 import threading
-from http.server import HTTPServer, BaseHTTPRequestHandler
-from datetime import datetime
-from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
+
+from flask import Flask
+import libsql_experimental as sqlite3
+from telegram import InlineKeyboardButton, InlineKeyboardMarkup, Update
 from telegram.constants import ParseMode
 from telegram.ext import (
     ApplicationBuilder,
-    CommandHandler,
     CallbackQueryHandler,
-    MessageHandler,
-    ConversationHandler,
-    filters,
+    CommandHandler,
     ContextTypes,
+    ConversationHandler,
+    MessageHandler,
+    CallbackQueryHandler,
+    filters,
 )
 
-# ------------------ Render Port Health Check Server ------------------
-class HealthCheckHandler(BaseHTTPRequestHandler):
-    def do_GET(self):
-        self.send_response(200)
-        self.end_headers()
-        self.wfile.write(b"Bot is alive!")
+# ------------------ 1. Flask Web Server (Render Health Check) ------------------
+web_app = Flask(__name__)
 
-def run_health_server():
+@web_app.route('/')
+def home():
+    return "Bot is running perfectly!", 200
+
+def run_flask():
     port = int(os.environ.get("PORT", 8080))
-    server = HTTPServer(('0.0.0.0', port), HealthCheckHandler)
-    server.serve_forever()
+    web_app.run(host='0.0.0.0', port=port)
 
-# ------------------ 1. መቼቶች (Configuration) ------------------
+# ------------------ 2. መቼቶች (Configuration) ------------------
 TOKEN = "8647816372:AAGG43oY-pndgRXT6V_E_REyW1zTHQ0-jrs"
 
 # 🟢 ሁለቱ አድሚኖች
@@ -56,7 +57,7 @@ def is_admin(user_id: int) -> bool:
     """ ተጠቃሚው አድሚን መሆኑን ያረጋግጣል """
     return user_id in ADMIN_IDS
 
-# ------------------ 2. Turso Cloud / SQLite Database Connection ------------------
+# ------------------ 3. Turso Cloud / SQLite Database Connection ------------------
 def get_db_connection():
     """ 
     Turso Cloud ዳታቤዝ ካለ እሱን ያገናኛል፤ 
@@ -224,7 +225,7 @@ def get_all_users():
         })
     return users
 
-# ------------------ 3. የወርሃዊ ክፍያ ማስታወሻ ------------------
+# ------------------ 4. የወርሃዊ ክፍያ ማስታወሻ ------------------
 async def check_expired_payments_logic(bot):
     conn = get_db_connection()
     cursor = conn.cursor()
@@ -264,7 +265,7 @@ async def background_payment_checker(app):
             logging.error(f"Background checker error: {e}")
         await asyncio.sleep(43200)
 
-# ------------------ 4. Keyboards & States ------------------
+# ------------------ 5. Keyboards & States ------------------
 REG_NAME, REG_PHONE, REG_BATCH = range(3)
 PAY_RECEIPT = 3
 BROADCAST_STATE = 4
@@ -321,7 +322,7 @@ async def is_banned(update: Update) -> bool:
         return True
     return False
 
-# ------------------ 5. User Registration & Payment Handlers ------------------
+# ------------------ 6. User Registration & Payment Handlers ------------------
 
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if await is_banned(update):
@@ -510,7 +511,7 @@ async def handle_admin_action(update: Update, context: ContextTypes.DEFAULT_TYPE
             parse_mode=ParseMode.HTML
         )
 
-# ------------------ 6. የአድሚን ክፍሎች (Admin Dashboard & Batch Announcements) ------------------
+# ------------------ 7. የአድሚን ክፍሎች (Admin Dashboard & Batch Announcements) ------------------
 
 async def show_admin_panel(query, context):
     all_users = get_all_users()
@@ -699,7 +700,7 @@ async def send_batch_pdf_document(update: Update, context: ContextTypes.DEFAULT_
     )
     return ConversationHandler.END
 
-# ------------------ 7. General Admin Broadcast, Revoke & Ban Handlers ------------------
+# ------------------ 8. General Admin Broadcast, Revoke & Ban Handlers ------------------
 
 async def show_paid_users_list(query, context):
     paid_users = get_paid_users_only()
@@ -860,7 +861,7 @@ async def unban_user(update: Update, context: ContextTypes.DEFAULT_TYPE):
     except ValueError:
         await update.message.reply_text("⚠️ እባክዎን ትክክለኛ የቁጥር ID ያስገቡ!")
 
-# ------------------ 8. Other Button Handlers ------------------
+# ------------------ 9. Other Button Handlers ------------------
 
 async def handle_buttons(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if await is_banned(update):
@@ -985,16 +986,19 @@ async def cancel(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await update.callback_query.edit_message_text("❌ ሂደቱ ተቋርጧል።", reply_markup=main_menu(user_id))
     return ConversationHandler.END
 
-# ------------------ 9. ዋና ማስኪያጃ (Main Execution) ------------------
+# ------------------ 10. ዋና ማስኪያጃ (Main Execution) ------------------
 async def post_init(app):
     asyncio.create_task(background_payment_checker(app))
 
 if __name__ == '__main__':
-    threading.Thread(target=run_health_server, daemon=True).start()
+    # 1. Web Server በ Background Thread ማስጀመር
+    threading.Thread(target=run_flask, daemon=True).start()
 
+    # 2. Database እና ባች ፎልደሮችን ማዘጋጀት
     init_db()
     init_batch_folders()
 
+    # 3. Telegram Bot Application ማዘጋጀት
     app = ApplicationBuilder().token(TOKEN).post_init(post_init).build()
 
     reg_handler = ConversationHandler(
