@@ -45,7 +45,7 @@ TOKEN = os.environ.get(
 ADMIN_IDS = [7857140781, 7619940687]
 VIP_LINK = 'https://t.me/+YourVIPPrivateChannelLinkHere'
 
-# 🟢 MongoDB Connection Setup (ከ Timeout ጋር - Async Blocking እንዳይፈጥር በ to_thread ይጠቀማል)
+# 🟢 MongoDB Connection Setup
 MONGO_URI = os.environ.get(
     'MONGO_URI',
     'mongodb+srv://Marda_sound:sa1995mi@cluster0.uoc9mel.mongodb.net/?appName=Cluster0',
@@ -167,7 +167,6 @@ def get_all_users():
         'name': doc.get('name', ''),
         'phone': doc.get('phone', ''),
         'batch': doc.get('batch', ''),
-        'payment_status': doc.get('payment_status', ''),
         'balance': doc.get('balance', 0.0),
         'is_banned': doc.get('is_banned', 0),
         'payment_date': doc.get('payment_date', ''),
@@ -327,6 +326,7 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
   if update.message:
     await update.message.reply_text(text, reply_markup=main_menu(user_id))
   elif update.callback_query:
+    await update.callback_query.answer()
     await update.callback_query.edit_message_text(
         text, reply_markup=main_menu(user_id)
     )
@@ -338,6 +338,7 @@ async def start_registration(
   if await is_banned(update):
     return ConversationHandler.END
   query = update.callback_query
+  await query.answer()
   await query.edit_message_text(
       '📝 <b>የምዝገባ ፎርም</b>\n\nእባክዎን <b>ሙሉ ስምዎን</b>'
       ' ይፃፉልን፡\n\n(ለማቋረጥ /cancel ይበሉ)',
@@ -396,6 +397,7 @@ async def start_payment(update: Update, context: ContextTypes.DEFAULT_TYPE):
   if await is_banned(update):
     return ConversationHandler.END
   query = update.callback_query
+  await query.answer()
 
   payment_info = (
       '💳 <b>የክፍያ መረጃ</b>\n\n'
@@ -490,6 +492,7 @@ async def handle_admin_action(
     update: Update, context: ContextTypes.DEFAULT_TYPE
 ):
   query = update.callback_query
+  await query.answer()
 
   if not is_admin(update.effective_user.id):
     return
@@ -544,7 +547,7 @@ async def handle_admin_action(
     )
 
 
-# ------------------ 8. የአድሚን ክፍሎች (Admin Dashboard & Batch Announcements) ------------------
+# ------------------ 8. የአድሚን ክፍሎች (Admin Dashboard) ------------------
 
 
 async def show_admin_panel(query, context):
@@ -680,11 +683,9 @@ async def display_specific_batch_users(query, context, batch_name):
   )
 
 
-# --- በየባቹ ማስታወቂያ መላኪያ Handlers (Text & PDF) ---
-
-
 async def prompt_batch_msg(update: Update, context: ContextTypes.DEFAULT_TYPE):
   query = update.callback_query
+  await query.answer()
   batch_name = query.data.replace('btn_send_txt_', '')
   context.user_data['target_batch'] = batch_name
 
@@ -744,6 +745,7 @@ async def send_batch_text_message(
 
 async def prompt_batch_pdf(update: Update, context: ContextTypes.DEFAULT_TYPE):
   query = update.callback_query
+  await query.answer()
   batch_name = query.data.replace('btn_send_pdf_', '')
   context.user_data['target_batch'] = batch_name
 
@@ -817,7 +819,7 @@ async def send_batch_pdf_document(
   return ConversationHandler.END
 
 
-# ------------------ 9. General Admin Broadcast, Revoke & Ban Handlers ------------------
+# ------------------ 9. General Broadcast, Ban & Revoke Handlers ------------------
 
 
 async def show_paid_users_list(query, context):
@@ -849,6 +851,7 @@ async def show_paid_users_list(query, context):
 
 async def start_broadcast(update: Update, context: ContextTypes.DEFAULT_TYPE):
   query = update.callback_query
+  await query.answer()
   await query.edit_message_text(
       '📢 <b>አጠቃላይ የብሮድካስት መልእክት</b>\n\nለሁሉም ተጠቃሚዎች እንዲላክ የሚፈልጉትን'
       ' መልእክት ይጻፉልኝ፡\n\n(ለማቋረጥ /cancel ይበሉ)',
@@ -1187,6 +1190,7 @@ async def cancel(update: Update, context: ContextTypes.DEFAULT_TYPE):
         '❌ ሂደቱ ተቋርጧል።', reply_markup=main_menu(user_id)
     )
   elif update.callback_query:
+    await update.callback_query.answer()
     await update.callback_query.edit_message_text(
         '❌ ሂደቱ ተቋርጧል።', reply_markup=main_menu(user_id)
     )
