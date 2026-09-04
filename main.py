@@ -45,7 +45,7 @@ TOKEN = os.environ.get(
 ADMIN_IDS = [7857140781, 7619940687]
 VIP_LINK = 'https://t.me/+YourVIPPrivateChannelLinkHere'
 
-# 🟢 MongoDB Connection Setup (ከ Timeout ጋር)
+# 🟢 MongoDB Connection Setup (ከ Timeout ጋር - Async Blocking እንዳይፈጥር በ to_thread ይጠቀማል)
 MONGO_URI = os.environ.get(
     'MONGO_URI',
     'mongodb+srv://Marda_sound:sa1995mi@cluster0.uoc9mel.mongodb.net/?appName=Cluster0',
