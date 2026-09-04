@@ -1,8 +1,4 @@
 python-telegram-bot>=20.0
-libsql-experimental
-flask
-python-telegram-bot
-pymongo
 
 
 
