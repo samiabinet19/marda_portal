@@ -40,7 +40,7 @@ def run_flask():
 
 # ------------------ 3. መቼቶች (Configuration) ------------------
 TOKEN = os.environ.get(
-    'BOT_TOKEN', '8647816372:AAGG43oY-pndgRXT6V_E_REyW1zTHQ0-jrs'
+    'BOT_TOKEN', '8647816372:AAHfFBJIuXoP3lpRyud6kPsUavh6rnWF_TQ'
 )
 ADMIN_IDS = [7857140781, 7619940687]
 VIP_LINK = 'https://t.me/+YourVIPPrivateChannelLinkHere'
