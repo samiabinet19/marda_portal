@@ -1,5 +1,6 @@
 import logging
 import psycopg2
+from psycopg2.pool import ThreadedConnectionPool
 import asyncio
 import os
 import threading
@@ -108,8 +109,20 @@ if not DATABASE_URL:
     )
 
 
+DB_POOL = ThreadedConnectionPool(
+    minconn=1,
+    maxconn=10,
+    dsn=DATABASE_URL,
+)
+
+
 def get_db_connection():
-    return psycopg2.connect(DATABASE_URL)
+    return DB_POOL.getconn()
+
+
+def release_db_connection(conn):
+    if conn is not None:
+        DB_POOL.putconn(conn)
 
 
 # ============================================================
@@ -233,7 +246,7 @@ def init_db():
     )
 
     conn.commit()
-    conn.close()
+    release_db_connection(conn)
 
 
 # ============================================================
@@ -264,7 +277,7 @@ def get_user(user_id: int):
 
     row = cursor.fetchone()
 
-    conn.close()
+    release_db_connection(conn)
 
     if not row:
         return None
@@ -300,7 +313,7 @@ def add_user_if_not_exists(user_id: int):
     )
 
     conn.commit()
-    conn.close()
+    release_db_connection(conn)
 
 
 def update_user(user_id: int, **kwargs):
@@ -336,7 +349,7 @@ def update_user(user_id: int, **kwargs):
         )
 
     conn.commit()
-    conn.close()
+    release_db_connection(conn)
 
 
 def get_all_users():
@@ -361,7 +374,7 @@ def get_all_users():
 
     rows = cursor.fetchall()
 
-    conn.close()
+    release_db_connection(conn)
 
     users = []
 
@@ -402,7 +415,7 @@ def get_paid_users_only():
 
     rows = cursor.fetchall()
 
-    conn.close()
+    release_db_connection(conn)
 
     paid_users = []
 
@@ -442,7 +455,7 @@ def get_users_by_batch(batch_name: str):
 
     rows = cursor.fetchall()
 
-    conn.close()
+    release_db_connection(conn)
 
     users = []
 
@@ -493,7 +506,7 @@ def record_payment_history(
     )
 
     conn.commit()
-    conn.close()
+    release_db_connection(conn)
 
 
 # ============================================================
@@ -502,24 +515,23 @@ def record_payment_history(
 
 async def check_expired_payments_logic(bot):
 
-    conn = get_db_connection()
-    cursor = conn.cursor()
+    def load_approved_users():
+        conn = get_db_connection()
+        try:
+            with conn.cursor() as cursor:
+                cursor.execute(
+                    """
+                    SELECT user_id, name, payment_date
+                    FROM users
+                    WHERE payment_status = %s
+                    """,
+                    ("ፅድቋል (Approved)",)
+                )
+                return cursor.fetchall()
+        finally:
+            release_db_connection(conn)
 
-    cursor.execute(
-        """
-        SELECT
-            user_id,
-            name,
-            payment_date
-        FROM users
-        WHERE payment_status = %s
-        """,
-        ("ፅድቋል (Approved)",)
-    )
-
-    approved_users = cursor.fetchall()
-
-    conn.close()
+    approved_users = await asyncio.to_thread(load_approved_users)
 
     today = datetime.now()
 
@@ -569,7 +581,7 @@ async def check_expired_payments_logic(bot):
 
             elif days_passed >= 30:
 
-                update_user(
+                await db_update_user(
                     uid,
                     payment_status="ጊዜው ያለፈበት (Expired)"
                 )
@@ -620,6 +632,41 @@ async def background_payment_checker(app):
 
 
 # ============================================================
+# ASYNC DATABASE HELPERS
+# ============================================================
+# psycopg2 is synchronous, so run database work in worker threads.
+# This prevents slow PostgreSQL operations from blocking Telegram's
+# asyncio event loop and delaying other users.
+
+async def db_get_user(user_id: int):
+    return await asyncio.to_thread(get_user, user_id)
+
+
+async def db_add_user(user_id: int):
+    return await asyncio.to_thread(add_user_if_not_exists, user_id)
+
+
+async def db_update_user(user_id: int, **kwargs):
+    return await asyncio.to_thread(update_user, user_id, **kwargs)
+
+
+async def db_get_all_users():
+    return await asyncio.to_thread(get_all_users)
+
+
+async def db_get_paid_users_only():
+    return await asyncio.to_thread(get_paid_users_only)
+
+
+async def db_get_users_by_batch(batch_name: str):
+    return await asyncio.to_thread(get_users_by_batch, batch_name)
+
+
+async def db_record_payment_history(user_id: int, photo_id: str, status: str):
+    return await asyncio.to_thread(record_payment_history, user_id, photo_id, status)
+
+
+# ============================================================
 # 8. CONVERSATION STATES
 # ============================================================
 
@@ -636,9 +683,10 @@ BATCH_MSG_STATE, BATCH_PDF_STATE = range(5, 7)
 # 9. KEYBOARDS
 # ============================================================
 
-def main_menu(user_id: int):
+def main_menu(user_id: int, user=None):
 
-    user = get_user(user_id)
+    if user is None:
+        user = get_user(user_id)
 
     keyboard = [
 
@@ -753,6 +801,13 @@ def back_menu():
     )
 
 
+
+
+async def async_main_menu(user_id: int):
+    user = await db_get_user(user_id)
+    return main_menu(user_id, user)
+
+
 # ============================================================
 # 10. BAN CHECK
 # ============================================================
@@ -761,7 +816,7 @@ async def is_banned(update: Update) -> bool:
 
     user_id = update.effective_user.id
 
-    user = get_user(user_id)
+    user = await db_get_user(user_id)
 
     if user and user["is_banned"] == 1:
 
@@ -803,7 +858,8 @@ async def start(
 
     user_id = update.effective_user.id
 
-    add_user_if_not_exists(user_id)
+    await db_add_user(user_id)
+    user = await db_get_user(user_id)
 
     text = (
         "እንኳን ወደ ፖርታሉ በሰላም መጡ! 👋\n"
@@ -815,14 +871,14 @@ async def start(
 
         await update.message.reply_text(
             text,
-            reply_markup=main_menu(user_id)
+            reply_markup=main_menu(user_id, user)
         )
 
     elif update.callback_query:
 
         await update.callback_query.edit_message_text(
             text,
-            reply_markup=main_menu(user_id)
+            reply_markup=main_menu(user_id, user)
         )
 
 
@@ -862,9 +918,9 @@ async def get_name(
 
     user_id = update.effective_user.id
 
-    add_user_if_not_exists(user_id)
+    await db_add_user(user_id)
 
-    update_user(
+    await db_update_user(
         user_id,
         name=update.message.text
     )
@@ -890,7 +946,7 @@ async def get_phone(
 
     user_id = update.effective_user.id
 
-    update_user(
+    await db_update_user(
         user_id,
         phone=update.message.text
     )
@@ -925,12 +981,12 @@ async def get_batch(
         ""
     )
 
-    update_user(
+    await db_update_user(
         user_id,
         batch=selected_batch
     )
 
-    user = get_user(user_id)
+    user = await db_get_user(user_id)
 
     await query.edit_message_text(
         (
@@ -942,7 +998,7 @@ async def get_batch(
             "የሚለውን በመጫን "
             "ደረሰኝ ማስገባት ይችላሉ።"
         ),
-        reply_markup=main_menu(user_id),
+        reply_markup=main_menu(user_id, user),
         parse_mode=ParseMode.HTML
     )
 
@@ -1005,14 +1061,14 @@ async def receive_receipt(
 
     photo_file_id = photo.file_id
 
-    add_user_if_not_exists(user_id)
+    await db_add_user(user_id)
 
-    update_user(
+    await db_update_user(
         user_id,
         payment_status="በማረጋገጥ ላይ (Pending)"
     )
 
-    user = get_user(user_id)
+    user = await db_get_user(user_id)
 
     user_batch = user.get(
         "batch",
@@ -1071,7 +1127,7 @@ async def receive_receipt(
                     f"Failed to save receipt: {e}"
                 )
 
-    record_payment_history(
+    await db_record_payment_history(
         user_id,
         photo_file_id,
         "በማረጋገጥ ላይ"
@@ -1084,7 +1140,7 @@ async def receive_receipt(
             "እስኪያፀድቀው ድረስ "
             "እባክዎን ትንሽ ይታገሱ።"
         ),
-        reply_markup=main_menu(user_id),
+        reply_markup=await async_main_menu(user_id),
         parse_mode=ParseMode.HTML
     )
 
@@ -1198,7 +1254,7 @@ async def handle_admin_action(
             "%Y-%m-%d"
         )
 
-        update_user(
+        await db_update_user(
             target_user_id,
             payment_status="ፅድቋል (Approved)",
             balance=100.0,
@@ -1257,7 +1313,7 @@ async def handle_admin_action(
 
     elif action == "reject":
 
-        update_user(
+        await db_update_user(
             target_user_id,
             payment_status="ተሰርዟል (Rejected)"
         )
@@ -1309,9 +1365,9 @@ async def show_admin_panel(
     context
 ):
 
-    all_users = get_all_users()
+    all_users = await db_get_all_users()
 
-    paid_users = get_paid_users_only()
+    paid_users = await db_get_paid_users_only()
 
     report = (
         "⚙️ <b>የአድሚን መቆጣጠሪያ Dashboard</b>\n\n"
@@ -1429,7 +1485,7 @@ async def show_batch_options_menu(
     batch_name
 ):
 
-    users = get_users_by_batch(
+    users = await db_get_users_by_batch(
         batch_name
     )
 
@@ -1488,7 +1544,7 @@ async def display_specific_batch_users(
     batch_name
 ):
 
-    users = get_users_by_batch(
+    users = await db_get_users_by_batch(
         batch_name
     )
 
@@ -1625,7 +1681,7 @@ async def send_batch_text_message(
 
     msg_text = update.message.text
 
-    users = get_users_by_batch(
+    users = await db_get_users_by_batch(
         batch_name
     )
 
@@ -1639,44 +1695,21 @@ async def send_batch_text_message(
 
         return ConversationHandler.END
 
-    success = 0
-    failed = 0
-
     await update.message.reply_text(
         f"⏳ መልእክቱ ለ{batch_name} "
         "ተማሪዎች እየተላከ ነው..."
     )
 
-    safe_message = html.escape(
-        msg_text
+    safe_message = html.escape(msg_text)
+    success, failed = await send_message_to_users(
+        context.bot,
+        users,
+        (
+            f"📢 <b>የ{html.escape(str(batch_name))} "
+            "ማስታወቂያ፦</b>\n\n"
+            f"{safe_message}"
+        ),
     )
-
-    for u in users:
-
-        if u["is_banned"] == 0:
-
-            try:
-
-                await context.bot.send_message(
-                    chat_id=u["user_id"],
-                    text=(
-                        f"📢 <b>የ{html.escape(str(batch_name))} "
-                        "ማስታወቂያ፦</b>\n\n"
-                        f"{safe_message}"
-                    ),
-                    parse_mode=ParseMode.HTML
-                )
-
-                success += 1
-
-            except Exception as e:
-
-                logging.error(
-                    f"Batch message failed "
-                    f"for {u['user_id']}: {e}"
-                )
-
-                failed += 1
 
     await update.message.reply_text(
         (
@@ -1686,7 +1719,7 @@ async def send_batch_text_message(
             f"{success}\n"
             f"• ያልደረሳቸው: {failed}"
         ),
-        reply_markup=main_menu(
+        reply_markup=await async_main_menu(
             update.effective_user.id
         ),
         parse_mode=ParseMode.HTML
@@ -1737,6 +1770,35 @@ async def prompt_batch_pdf(
     )
 
     return BATCH_PDF_STATE
+
+
+async def send_document_to_users(bot, users, document_id, caption):
+    semaphore = asyncio.Semaphore(8)
+
+    async def send_one(user):
+        if user.get("is_banned") != 0:
+            return False
+        async with semaphore:
+            try:
+                await bot.send_document(
+                    chat_id=user["user_id"],
+                    document=document_id,
+                    caption=caption,
+                    parse_mode=ParseMode.HTML,
+                )
+                return True
+            except Exception as e:
+                logging.error(
+                    f"PDF failed for {user['user_id']}: {e}"
+                )
+                return False
+
+    results = await asyncio.gather(
+        *(send_one(user) for user in users),
+    )
+    success = sum(results)
+    eligible = sum(1 for user in users if user.get("is_banned") == 0)
+    return success, eligible - success
 
 
 async def send_batch_pdf_document(
@@ -1837,44 +1899,21 @@ async def send_batch_pdf_document(
 
         return ConversationHandler.END
 
-    users = get_users_by_batch(
+    users = await db_get_users_by_batch(
         batch_name
     )
 
-    success = 0
-    failed = 0
-
-    safe_caption = html.escape(
-        caption
+    safe_caption = html.escape(caption)
+    success, failed = await send_document_to_users(
+        context.bot,
+        users,
+        doc.file_id,
+        (
+            f"📢 <b>የ{html.escape(str(batch_name))} "
+            "ማስታወቂያ PDF፦</b>\n\n"
+            f"{safe_caption}"
+        ),
     )
-
-    for u in users:
-
-        if u["is_banned"] == 0:
-
-            try:
-
-                await context.bot.send_document(
-                    chat_id=u["user_id"],
-                    document=doc.file_id,
-                    caption=(
-                        f"📢 <b>የ{html.escape(str(batch_name))} "
-                        "ማስታወቂያ PDF፦</b>\n\n"
-                        f"{safe_caption}"
-                    ),
-                    parse_mode=ParseMode.HTML
-                )
-
-                success += 1
-
-            except Exception as e:
-
-                logging.error(
-                    f"PDF failed for "
-                    f"{u['user_id']}: {e}"
-                )
-
-                failed += 1
 
     await update.message.reply_text(
         (
@@ -1890,7 +1929,7 @@ async def send_batch_pdf_document(
 
             f"• ያልደረሳቸው: {failed}"
         ),
-        reply_markup=main_menu(
+        reply_markup=await async_main_menu(
             update.effective_user.id
         ),
         parse_mode=ParseMode.HTML
@@ -1908,7 +1947,7 @@ async def show_paid_users_list(
     context
 ):
 
-    paid_users = get_paid_users_only()
+    paid_users = await db_get_paid_users_only()
 
     if not paid_users:
 
@@ -1977,6 +2016,40 @@ async def show_paid_users_list(
 
 
 # ============================================================
+# FAST BROADCAST HELPER
+# ============================================================
+
+async def send_message_to_users(bot, users, text):
+    semaphore = asyncio.Semaphore(8)
+
+    async def send_one(user):
+        if user.get("is_banned") != 0:
+            return False
+
+        async with semaphore:
+            try:
+                await bot.send_message(
+                    chat_id=user["user_id"],
+                    text=text,
+                    parse_mode=ParseMode.HTML,
+                )
+                return True
+            except Exception as e:
+                logging.error(
+                    f"Broadcast failed for {user['user_id']}: {e}"
+                )
+                return False
+
+    results = await asyncio.gather(
+        *(send_one(user) for user in users),
+        return_exceptions=False,
+    )
+    return sum(results), sum(
+        1 for user in users if user.get("is_banned") == 0
+    ) - sum(results)
+
+
+# ============================================================
 # 22. GENERAL BROADCAST
 # ============================================================
 
@@ -2018,45 +2091,22 @@ async def send_broadcast(
 
     broadcast_msg = update.message.text
 
-    users = get_all_users()
-
-    success = 0
-    failed = 0
+    users = await db_get_all_users()
 
     await update.message.reply_text(
         "⏳ መልእክቱ እየተላከ ነው..."
     )
 
-    safe_message = html.escape(
-        broadcast_msg
+    safe_message = html.escape(broadcast_msg)
+    success, failed = await send_message_to_users(
+        context.bot,
+        users,
+        (
+            "📢 <b>ማስታወቂያ "
+            "ከፖርታሉ:</b>\n\n"
+            f"{safe_message}"
+        ),
     )
-
-    for u in users:
-
-        if u["is_banned"] == 0:
-
-            try:
-
-                await context.bot.send_message(
-                    chat_id=u["user_id"],
-                    text=(
-                        "📢 <b>ማስታወቂያ "
-                        "ከፖርታሉ:</b>\n\n"
-                        f"{safe_message}"
-                    ),
-                    parse_mode=ParseMode.HTML
-                )
-
-                success += 1
-
-            except Exception as e:
-
-                logging.error(
-                    f"Broadcast failed for "
-                    f"{u['user_id']}: {e}"
-                )
-
-                failed += 1
 
     await update.message.reply_text(
         (
@@ -2065,7 +2115,7 @@ async def send_broadcast(
             f"{success}\n"
             f"• ያልደረሳቸው: {failed}"
         ),
-        reply_markup=main_menu(
+        reply_markup=await async_main_menu(
             update.effective_user.id
         ),
         parse_mode=ParseMode.HTML
@@ -2108,7 +2158,7 @@ async def revoke_user(
             context.args[0]
         )
 
-        user = get_user(
+        user = await db_get_user(
             target_id
         )
 
@@ -2122,7 +2172,7 @@ async def revoke_user(
 
             return
 
-        update_user(
+        await db_update_user(
             target_id,
             payment_status="ተሰርዟል (Rejected)",
             balance=0.0,
@@ -2205,7 +2255,7 @@ async def ban_user(
             context.args[0]
         )
 
-        user = get_user(
+        user = await db_get_user(
             target_id
         )
 
@@ -2219,7 +2269,7 @@ async def ban_user(
 
             return
 
-        update_user(
+        await db_update_user(
             target_id,
             is_banned=1
         )
@@ -2290,7 +2340,7 @@ async def unban_user(
             context.args[0]
         )
 
-        user = get_user(
+        user = await db_get_user(
             target_id
         )
 
@@ -2304,7 +2354,7 @@ async def unban_user(
 
             return
 
-        update_user(
+        await db_update_user(
             target_id,
             is_banned=0
         )
@@ -2633,7 +2683,7 @@ async def handle_buttons(
 
     elif query.data == "profile":
 
-        user = get_user(user_id)
+        user = await db_get_user(user_id)
 
         if not user:
 
@@ -2771,18 +2821,20 @@ async def cancel(
         None
     )
 
+    user = await db_get_user(user_id)
+
     if update.message:
 
         await update.message.reply_text(
             "❌ ሂደቱ ተቋርጧል።",
-            reply_markup=main_menu(user_id)
+            reply_markup=main_menu(user_id, user)
         )
 
     elif update.callback_query:
 
         await update.callback_query.edit_message_text(
             "❌ ሂደቱ ተቋርጧል።",
-            reply_markup=main_menu(user_id)
+            reply_markup=main_menu(user_id, user)
         )
 
     return ConversationHandler.END
@@ -3108,7 +3160,7 @@ def main():
     finally:
         # Releasing/closing the DB connection releases the advisory lock.
         try:
-            polling_lock_conn.close()
+            release_db_connection(polling_lock_conn)
             logging.info("Telegram polling lock released.")
         except Exception:
             logging.exception("Failed to close Telegram polling lock connection.")
