@@ -4,6 +4,7 @@ import asyncio
 import os
 import threading
 import html
+import time
 
 from http.server import HTTPServer, BaseHTTPRequestHandler
 from datetime import datetime
@@ -109,6 +110,44 @@ if not DATABASE_URL:
 
 def get_db_connection():
     return psycopg2.connect(DATABASE_URL)
+
+
+# ============================================================
+# TELEGRAM POLLING SINGLETON LOCK
+# ============================================================
+# Render can briefly run the old and new deployment at the same
+# time during a redeploy. Telegram allows only ONE getUpdates
+# polling process for a bot token. This PostgreSQL advisory lock
+# makes sure only one instance polls Telegram, even during a
+# rolling deployment. The DB connection must stay open while the
+# bot is polling because the lock belongs to that connection.
+
+POLLING_LOCK_KEY = "samad_telegram_getupdates_singleton"
+
+
+def acquire_polling_lock():
+    lock_conn = get_db_connection()
+    lock_conn.autocommit = True
+
+    while True:
+        with lock_conn.cursor() as cur:
+            cur.execute(
+                "SELECT pg_try_advisory_lock(hashtext(%s));",
+                (POLLING_LOCK_KEY,)
+            )
+            locked = cur.fetchone()[0]
+
+        if locked:
+            logging.info(
+                "Telegram polling lock acquired. This instance may run getUpdates."
+            )
+            return lock_conn
+
+        logging.warning(
+            "Another bot instance is currently polling Telegram. "
+            "Waiting 5 seconds for the polling lock..."
+        )
+        time.sleep(5)
 
 BASE_BATCH_DIR = os.path.join(
     DATA_DIR,
@@ -2769,6 +2808,12 @@ def main():
     # Initialize Batch_15 - Batch_50 folders
     init_batch_folders()
 
+    # IMPORTANT: acquire a database-backed singleton lock before
+    # starting Telegram polling. This prevents Telegram
+    # "Conflict: terminated by other getUpdates request" errors
+    # when Render temporarily overlaps two deployments.
+    polling_lock_conn = acquire_polling_lock()
+
     # Build Telegram application
     app = (
         ApplicationBuilder()
@@ -3046,9 +3091,18 @@ def main():
     )
 
     # Start polling
-    app.run_polling(
-        drop_pending_updates=True
-    )
+    # Only the process holding polling_lock_conn reaches this point.
+    try:
+        app.run_polling(
+            drop_pending_updates=True
+        )
+    finally:
+        # Releasing/closing the DB connection releases the advisory lock.
+        try:
+            polling_lock_conn.close()
+            logging.info("Telegram polling lock released.")
+        except Exception:
+            logging.exception("Failed to close Telegram polling lock connection.")
 
 
 # ============================================================
