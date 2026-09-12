@@ -1,5 +1,5 @@
 import logging
-import sqlite3
+import psycopg2
 import asyncio
 import os
 import threading
@@ -98,10 +98,17 @@ DATA_DIR = (
 
 os.makedirs(DATA_DIR, exist_ok=True)
 
-DB_NAME = os.path.join(
-    DATA_DIR,
-    "bot_database.db"
-)
+DATABASE_URL = os.environ.get("DATABASE_URL")
+
+if not DATABASE_URL:
+    raise RuntimeError(
+        "DATABASE_URL environment variable is missing. "
+        "Add DATABASE_URL in Render Environment Variables."
+    )
+
+
+def get_db_connection():
+    return psycopg2.connect(DATABASE_URL)
 
 BASE_BATCH_DIR = os.path.join(
     DATA_DIR,
@@ -146,7 +153,7 @@ def init_batch_folders():
 
 def init_db():
 
-    conn = sqlite3.connect(DB_NAME)
+    conn = get_db_connection()
     cursor = conn.cursor()
 
     cursor.execute(
@@ -164,21 +171,10 @@ def init_db():
         """
     )
 
-    # For old databases that may not have batch column
-    try:
-        cursor.execute(
-            """
-            ALTER TABLE users
-            ADD COLUMN batch TEXT DEFAULT 'ያልተመረጠ'
-            """
-        )
-    except sqlite3.OperationalError:
-        pass
-
     cursor.execute(
         """
         CREATE TABLE IF NOT EXISTS payment_history (
-            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            id BIGSERIAL PRIMARY KEY,
             user_id INTEGER,
             photo_id TEXT,
             amount REAL DEFAULT 100.0,
@@ -198,7 +194,7 @@ def init_db():
 
 def get_user(user_id: int):
 
-    conn = sqlite3.connect(DB_NAME)
+    conn = get_db_connection()
     cursor = conn.cursor()
 
     cursor.execute(
@@ -213,7 +209,7 @@ def get_user(user_id: int):
             is_banned,
             payment_date
         FROM users
-        WHERE user_id = ?
+        WHERE user_id = %s
         """,
         (user_id,)
     )
@@ -244,13 +240,13 @@ def add_user_if_not_exists(user_id: int):
     if user:
         return
 
-    conn = sqlite3.connect(DB_NAME)
+    conn = get_db_connection()
     cursor = conn.cursor()
 
     cursor.execute(
         """
         INSERT INTO users (user_id)
-        VALUES (?)
+        VALUES (%s)
         """,
         (user_id,)
     )
@@ -274,7 +270,7 @@ def update_user(user_id: int, **kwargs):
         "payment_date",
     }
 
-    conn = sqlite3.connect(DB_NAME)
+    conn = get_db_connection()
     cursor = conn.cursor()
 
     for key, value in kwargs.items():
@@ -285,8 +281,8 @@ def update_user(user_id: int, **kwargs):
         cursor.execute(
             f"""
             UPDATE users
-            SET {key} = ?
-            WHERE user_id = ?
+            SET {key} = %s
+            WHERE user_id = %s
             """,
             (value, user_id)
         )
@@ -297,7 +293,7 @@ def update_user(user_id: int, **kwargs):
 
 def get_all_users():
 
-    conn = sqlite3.connect(DB_NAME)
+    conn = get_db_connection()
     cursor = conn.cursor()
 
     cursor.execute(
@@ -339,7 +335,7 @@ def get_all_users():
 
 def get_paid_users_only():
 
-    conn = sqlite3.connect(DB_NAME)
+    conn = get_db_connection()
     cursor = conn.cursor()
 
     cursor.execute(
@@ -378,7 +374,7 @@ def get_paid_users_only():
 
 def get_users_by_batch(batch_name: str):
 
-    conn = sqlite3.connect(DB_NAME)
+    conn = get_db_connection()
     cursor = conn.cursor()
 
     cursor.execute(
@@ -391,7 +387,7 @@ def get_users_by_batch(batch_name: str):
             payment_date,
             is_banned
         FROM users
-        WHERE batch = ?
+        WHERE batch = %s
         """,
         (batch_name,)
     )
@@ -422,7 +418,7 @@ def record_payment_history(
     status: str
 ):
 
-    conn = sqlite3.connect(DB_NAME)
+    conn = get_db_connection()
     cursor = conn.cursor()
 
     today_str = datetime.now().strftime(
@@ -438,7 +434,7 @@ def record_payment_history(
             payment_date,
             status
         )
-        VALUES (?, ?, ?, ?)
+        VALUES (%s, %s, %s, %s)
         """,
         (
             user_id,
@@ -458,7 +454,7 @@ def record_payment_history(
 
 async def check_expired_payments_logic(bot):
 
-    conn = sqlite3.connect(DB_NAME)
+    conn = get_db_connection()
     cursor = conn.cursor()
 
     cursor.execute(
@@ -468,7 +464,7 @@ async def check_expired_payments_logic(bot):
             name,
             payment_date
         FROM users
-        WHERE payment_status = ?
+        WHERE payment_status = %s
         """,
         ("ፅድቋል (Approved)",)
     )
