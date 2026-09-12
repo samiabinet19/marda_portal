@@ -198,7 +198,7 @@ def init_db():
     cursor.execute(
         """
         CREATE TABLE IF NOT EXISTS users (
-            user_id INTEGER PRIMARY KEY,
+            user_id BIGINT PRIMARY KEY,
             name TEXT DEFAULT 'አልተመዘገበም',
             phone TEXT DEFAULT 'አልተመዘገበም',
             batch TEXT DEFAULT 'ያልተመረጠ',
@@ -214,13 +214,22 @@ def init_db():
         """
         CREATE TABLE IF NOT EXISTS payment_history (
             id BIGSERIAL PRIMARY KEY,
-            user_id INTEGER,
+            user_id BIGINT,
             photo_id TEXT,
             amount REAL DEFAULT 100.0,
             payment_date TEXT,
             status TEXT
         )
         """
+    )
+
+    # Telegram user IDs can be larger than PostgreSQL INTEGER (32-bit).
+    # Convert existing deployments' columns to BIGINT as well.
+    cursor.execute(
+        "ALTER TABLE users ALTER COLUMN user_id TYPE BIGINT"
+    )
+    cursor.execute(
+        "ALTER TABLE payment_history ALTER COLUMN user_id TYPE BIGINT"
     )
 
     conn.commit()
