@@ -2857,23 +2857,39 @@ async def post_init(app):
 
 def main():
 
-    # Start Render health server
-    threading.Thread(
-        target=run_health_server,
-        daemon=True
-    ).start()
+    # Render Web Service provides the HTTP port.
+    # Telegram will deliver updates to this service via webhook.
+    port = int(os.environ.get("PORT", "10000"))
+
+    # Render exposes the public service URL through RENDER_EXTERNAL_URL.
+    # Keep a fallback for environments that only provide the hostname.
+    external_url = os.environ.get("RENDER_EXTERNAL_URL")
+    if not external_url:
+        hostname = os.environ.get("RENDER_EXTERNAL_HOSTNAME")
+        if hostname:
+            external_url = f"https://{hostname}"
+
+    if not external_url:
+        raise RuntimeError(
+            "RENDER_EXTERNAL_URL is missing. "
+            "Set the Render public service URL before starting webhook mode."
+        )
+
+    webhook_path = "telegram-webhook"
+    webhook_url = f"{external_url.rstrip('/')}/{webhook_path}"
+
+    # Telegram requires a secret token header for webhook verification.
+    # Deriving it from the private bot token avoids storing another secret.
+    import hashlib
+    webhook_secret = hashlib.sha256(
+        TOKEN.encode("utf-8")
+    ).hexdigest()[:64]
 
     # Initialize database
     init_db()
 
     # Initialize Batch_15 - Batch_50 folders
     init_batch_folders()
-
-    # IMPORTANT: acquire a database-backed singleton lock before
-    # starting Telegram polling. This prevents Telegram
-    # "Conflict: terminated by other getUpdates request" errors
-    # when Render temporarily overlaps two deployments.
-    polling_lock_conn = acquire_polling_lock()
 
     # Build Telegram application
     app = (
@@ -3151,19 +3167,24 @@ def main():
         "በተሳካ ሁኔታ ስራ ጀምሯል..."
     )
 
-    # Start polling
-    # Only the process holding polling_lock_conn reaches this point.
-    try:
-        app.run_polling(
-            drop_pending_updates=True
-        )
-    finally:
-        # Releasing/closing the DB connection releases the advisory lock.
-        try:
-            release_db_connection(polling_lock_conn)
-            logging.info("Telegram polling lock released.")
-        except Exception:
-            logging.exception("Failed to close Telegram polling lock connection.")
+    # Start Telegram webhook.
+    # Unlike getUpdates polling, webhook mode does not create a competing
+    # polling process during Render deploys, so the Telegram Conflict/lock
+    # problem is avoided.
+    logging.info(
+        "🌐 Starting Telegram webhook on port %s: %s",
+        port,
+        webhook_url,
+    )
+
+    app.run_webhook(
+        listen="0.0.0.0",
+        port=port,
+        url_path=webhook_path,
+        webhook_url=webhook_url,
+        secret_token=webhook_secret,
+        drop_pending_updates=True,
+    )
 
 
 # ============================================================
