@@ -2857,32 +2857,17 @@ async def post_init(app):
 def main():
 
     # Render Web Service provides the HTTP port.
-    # Telegram will deliver updates to this service via webhook.
+    # The health server uses this port so Render/UptimeRobot gets HTTP 200.
+    # Telegram runs separately using polling, so it does not need this port.
     port = int(os.environ.get("PORT", "10000"))
 
-    # Render exposes the public service URL through RENDER_EXTERNAL_URL.
-    # Keep a fallback for environments that only provide the hostname.
-    external_url = os.environ.get("RENDER_EXTERNAL_URL")
-    if not external_url:
-        hostname = os.environ.get("RENDER_EXTERNAL_HOSTNAME")
-        if hostname:
-            external_url = f"https://{hostname}"
-
-    if not external_url:
-        raise RuntimeError(
-            "RENDER_EXTERNAL_URL is missing. "
-            "Set the Render public service URL before starting webhook mode."
-        )
-
-    webhook_path = "telegram-webhook"
-    webhook_url = f"{external_url.rstrip('/')}/{webhook_path}"
-
-    # Telegram requires a secret token header for webhook verification.
-    # Deriving it from the private bot token avoids storing another secret.
-    import hashlib
-    webhook_secret = hashlib.sha256(
-        TOKEN.encode("utf-8")
-    ).hexdigest()[:64]
+    # Start the Render/UptimeRobot health endpoint in the background.
+    # This serves "/" with HTTP 200 and "Bot is alive!".
+    health_thread = threading.Thread(
+        target=run_health_server,
+        daemon=True
+    )
+    health_thread.start()
 
     # Initialize database
     init_db()
@@ -3166,24 +3151,27 @@ def main():
         "በተሳካ ሁኔታ ስራ ጀምሯል..."
     )
 
-    # Start Telegram webhook.
-    # Unlike getUpdates polling, webhook mode does not create a competing
-    # polling process during Render deploys, so the Telegram Conflict/lock
-    # problem is avoided.
-    logging.info(
-        "🌐 Starting Telegram webhook on port %s: %s",
-        port,
-        webhook_url,
-    )
+    # Telegram polling runs separately from the HTTP health server.
+    # PostgreSQL advisory lock prevents two Render instances from polling
+    # the same Telegram bot at the same time during deployments.
+    lock_conn = acquire_polling_lock()
 
-    app.run_webhook(
-        listen="0.0.0.0",
-        port=port,
-        url_path=webhook_path,
-        webhook_url=webhook_url,
-        secret_token=webhook_secret,
-        drop_pending_updates=True,
-    )
+    try:
+        logging.info("🌐 Starting Telegram polling...")
+        app.run_polling(
+            drop_pending_updates=True
+        )
+    finally:
+        try:
+            with lock_conn.cursor() as cur:
+                cur.execute(
+                    "SELECT pg_advisory_unlock(hashtext(%s));",
+                    (POLLING_LOCK_KEY,)
+                )
+        except Exception as e:
+            logging.error(f"Failed to release polling lock: {e}")
+        finally:
+            release_db_connection(lock_conn)
 
 
 # ============================================================
